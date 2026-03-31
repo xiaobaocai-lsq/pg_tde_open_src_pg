@@ -1,0 +1,47 @@
+codecov:
+  strict_yaml_branch: main
+coverage:
+  status:
+    project:
+      default:
+        target: 90%
+        threshold: 1%
+        base: auto
+        paths:
+          - "!fetools/"
+ignore:
+  - src/libkmip/
+comment:
+  layout: "header, diff, components"
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: auto
+        branches:
+          - main
+  individual_components:
+    - component_id: access
+      paths:
+        - src/access/**
+    - component_id: bin
+      paths:
+        - src/bin/**
+    - component_id: catalog
+      paths:
+        - src/catalog/**
+    - component_id: common
+      paths:
+        - src/common/**
+    - component_id: encryption
+      paths:
+        - src/encryption/**
+    - component_id: keyring
+      paths:
+        - src/keyring/**
+    - component_id: src
+      paths:
+        - src/*.c
+    - component_id: smgr
+      paths:
+        - src/smgr/**

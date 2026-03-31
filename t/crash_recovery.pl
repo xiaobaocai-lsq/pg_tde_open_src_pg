@@ -1,0 +1,156 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+use File::Basename;
+use Test::More;
+use lib 't';
+use pgtde;
+
+PGTDE::setup_files_dir(basename($0));
+
+unlink('/tmp/crash_recovery.per');
+
+my $node = PostgreSQL::Test::Cluster->new('main');
+$node->init;
+$node->append_conf(
+	'postgresql.conf', q{
+checkpoint_timeout = 1h
+shared_preload_libraries = 'pg_tde'
+});
+$node->start;
+
+PGTDE::psql($node, 'postgres', 'CREATE EXTENSION pg_tde;');
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_add_global_key_provider_file('global_keyring', '/tmp/crash_recovery.per');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_create_key_using_global_key_provider('wal_encryption_key', 'global_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_set_server_key_using_global_key_provider('wal_encryption_key', 'global_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_add_database_key_provider_file('db_keyring', '/tmp/crash_recovery.per');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_create_key_using_database_key_provider('db_key', 'db_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_set_key_using_database_key_provider('db_key', 'db_keyring');"
+);
+
+PGTDE::psql($node, 'postgres',
+	"CREATE TABLE test_enc (x int PRIMARY KEY) USING tde_heap;");
+PGTDE::psql($node, 'postgres', "INSERT INTO test_enc (x) VALUES (1), (2);");
+
+PGTDE::psql($node, 'postgres',
+	"CREATE TABLE test_plain (x int PRIMARY KEY) USING heap;");
+PGTDE::psql($node, 'postgres', "INSERT INTO test_plain (x) VALUES (3), (4);");
+
+PGTDE::psql($node, 'postgres', "ALTER SYSTEM SET pg_tde.wal_encrypt = 'on';");
+
+PGTDE::append_to_result_file("-- kill -9");
+$node->kill9;
+
+PGTDE::append_to_result_file("-- server start");
+PGTDE::poll_start($node);
+
+PGTDE::append_to_result_file("-- rotate wal key");
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_create_key_using_global_key_provider('wal_encryption_key_1', 'global_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_set_server_key_using_global_key_provider('wal_encryption_key_1', 'global_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_create_key_using_database_key_provider('db_key_1', 'db_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_set_key_using_database_key_provider('db_key_1', 'db_keyring');"
+);
+PGTDE::psql($node, 'postgres', "INSERT INTO test_enc (x) VALUES (3), (4);");
+PGTDE::append_to_result_file("-- kill -9");
+$node->kill9;
+PGTDE::append_to_result_file("-- server start");
+PGTDE::append_to_result_file(
+	"-- check that pg_tde_save_principal_key_redo hasn't destroyed a WAL key created during the server start"
+);
+PGTDE::poll_start($node);
+
+PGTDE::append_to_result_file("-- rotate wal key");
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_create_key_using_global_key_provider('wal_encryption_key_2', 'global_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_set_server_key_using_global_key_provider('wal_encryption_key_2', 'global_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_create_key_using_database_key_provider('db_key_2', 'db_keyring');"
+);
+PGTDE::psql($node, 'postgres',
+	"SELECT pg_tde_set_key_using_database_key_provider('db_key_2', 'db_keyring');"
+);
+PGTDE::psql($node, 'postgres', "INSERT INTO test_enc (x) VALUES (5), (6);");
+PGTDE::append_to_result_file("-- kill -9");
+$node->kill9;
+PGTDE::append_to_result_file("-- server start");
+PGTDE::append_to_result_file(
+	"-- check that the key rotation hasn't destroyed a WAL key created during the server start"
+);
+PGTDE::poll_start($node);
+
+PGTDE::psql($node, 'postgres', "TABLE test_enc;");
+
+PGTDE::psql($node, 'postgres',
+	"CREATE TABLE test_enc2 (x int PRIMARY KEY) USING tde_heap;");
+PGTDE::append_to_result_file("-- kill -9");
+$node->kill9;
+PGTDE::append_to_result_file("-- server start");
+PGTDE::append_to_result_file(
+	"-- check redo of the smgr internal key creation when the key is on disk"
+);
+PGTDE::poll_start($node);
+
+PGTDE::psql($node, 'postgres', "INSERT INTO test_enc (x) VALUES (7), (8);");
+PGTDE::append_to_result_file("-- kill -9");
+$node->kill9;
+PGTDE::append_to_result_file("-- change cipher to aes_256");
+$node->append_conf(
+	'postgresql.conf', q{
+pg_tde.cipher = 'aes_256'
+});
+PGTDE::append_to_result_file("-- server start");
+PGTDE::append_to_result_file(
+	"-- check redo when cipher was changed after the server crash");
+PGTDE::poll_start($node);
+
+PGTDE::psql($node, 'postgres', "TABLE test_enc;");
+
+# Use an unlogged sequence owned by the encrypted table to ensure the sequence
+# is also encrypted. This is to verify that WAL replay doesn't overwrite the key
+# of an unlogged object's init fork, which would cause it to be unrecoverable
+# after crash recovery. We cannot use a regular relation in this test, because
+# their init forks is a 0 byte file so the wrong key being used isn't an issue
+# for them.
+PGTDE::psql($node, 'postgres',
+	"CREATE UNLOGGED SEQUENCE seq_unlogged OWNED BY test_enc.x;");
+PGTDE::psql($node, 'postgres', "SELECT pg_tde_is_encrypted('seq_unlogged');");
+PGTDE::psql($node, 'postgres', "SELECT nextval('seq_unlogged');");
+$node->kill9;
+PGTDE::poll_start($node);
+
+# The sequence is now reset by crash recovery and will give us the same result
+# as it did above.
+PGTDE::psql($node, 'postgres', "SELECT nextval('seq_unlogged');");
+
+$node->stop;
+
+# Compare the expected and out file
+my $compare = PGTDE->compare_results();
+
+is($compare, 0,
+	"Compare Files: $PGTDE::expected_filename_with_path and $PGTDE::out_filename_with_path files."
+);
+
+done_testing();

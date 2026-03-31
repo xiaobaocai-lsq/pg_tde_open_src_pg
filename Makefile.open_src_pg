@@ -1,0 +1,139 @@
+# Makefile for pg_tde - Open-source PostgreSQL Build
+#
+# This Makefile builds pg_tde without Percona Server dependencies.
+# WAL encryption is disabled; table data encryption is fully functional.
+#
+# Usage: make -f Makefile.open_src_pg
+# Or:    cp Makefile.open_src_pg Makefile && make
+#
+
+PGFILEDESC = "pg_tde - Transparent Data Encryption for PostgreSQL (open-source PG build)"
+MODULE_big = pg_tde
+EXTENSION = pg_tde
+
+# Extension SQL upgrade scripts
+DATA = pg_tde--2.0--2.1.sql pg_tde--1.0--2.0.sql pg_tde--1.0.sql
+
+# Regression tests (WAL encryption tests will fail/empty)
+REGRESS = \
+	access_control \
+	alter_index \
+	change_access_method \
+	create_database \
+	default_principal_key \
+	delete_principal_key \
+	insert_update_delete \
+	key_provider \
+	partition_table \
+	pg_tde_is_encrypted \
+	recreate_storage \
+	relocate \
+	tablespace \
+	toast_decrypt \
+	version
+
+# NOTE: The following tests are EXCLUDED because they require WAL encryption:
+#   - kmip_test (requires KMIP library)
+#   - vault_v2_test (requires Vault support)
+
+TAP_TESTS = 1
+
+# KMIP library - excluded from this build
+# KMIP requires additional dependencies and is only for WAL encryption anyway
+KMIP_OBJS =
+
+#
+# Object files for this build
+#
+# WAL-related objects REMOVED (require Percona Server API):
+#   src/access/pg_tde_xlog_smgr.o  - WAL storage manager (Percona-only)
+#   src/access/pg_tde_xlog_keys.o  - WAL key management (Percona-only)
+#
+# NOTE: pg_tde_xlog_keys.c is kept as a stub (no-op) since it's
+#       included in the extension build via Makefile.objects
+#
+
+OBJS = \
+	src/encryption/enc_tde.o \
+	src/encryption/enc_aes.o \
+	src/access/pg_tde_tdemap.o \
+	src/access/pg_tde_xlog.o \
+	src/access/pg_tde_xlog_keys.o \
+	src/keyring/keyring_curl.o \
+	src/keyring/keyring_file.o \
+	src/keyring/keyring_vault.o \
+	src/keyring/keyring_api.o \
+	src/catalog/tde_keyring.o \
+	src/catalog/tde_keyring_parse_opts.o \
+	src/catalog/tde_principal_key.o \
+	src/common/pg_tde_utils.o \
+	src/smgr/pg_tde_smgr.o \
+	src/pg_tde_event_capture.o \
+	src/pg_tde_guc.o \
+	src/pg_tde.o
+
+# Frontend tool objects (for pg_tde_{archive_decrypt,restore_encrypt})
+# These are EXCLUDED from the main build since they require WAL encryption:
+#   src/bin/pg_tde_archive_decrypt
+#   src/bin/pg_tde_restore_encrypt
+#   fetools/pg_tde_basebackup
+#   fetools/pg_tde_checksums
+#   fetools/pg_tde_resetwal
+#   fetools/pg_tde_rewind
+#   fetools/pg_tde_waldump
+
+# pg_config setup
+PG_CONFIG ?= pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+PG_CPPFLAGS = -Isrc/include -I$(shell $(PG_CONFIG) --includedir-server)
+PG_CPPFLAGS += -DPG_TDE_OPEN_SOURCE_BUILD
+
+include $(PGXS)
+
+# Link flags for encryption libraries
+SHLIB_LINK += -lcurl -lcrypto -lssl
+
+# Extra clean targets for this build
+EXTRA_CLEAN += \
+	pg_tde--2.0--2.1.sql.tmp \
+	pg_tde--1.0--2.0.sql.tmp \
+	pg_tde--1.0.sql.tmp
+
+# Build flags
+CFLAGS += -Wall -Wmissing-prototypes -Wpointer-arith -Wendif-labels
+
+.PHONY: build wal-check doc-check
+
+build: all
+
+# Check that we're building against a supported PostgreSQL version
+check-pg-version:
+	@$(PG_CONFIG) --version 2>/dev/null | grep -qE "PostgreSQL (15|16|17|18)" && \
+		echo "PostgreSQL version check: OK ($(shell $(PG_CONFIG) --version))" || \
+		{ echo "ERROR: Unsupported PostgreSQL version. pg_tde requires PG 15-18."; exit 1; }
+
+# Show build info
+info:
+	@echo "pg_tde - Open-source PostgreSQL Build"
+	@echo "======================================="
+	@echo "PostgreSQL:    $$($(PG_CONFIG) --version)"
+	@echo "Server incl:   $$($(PG_CONFIG) --includedir-server)"
+	@echo "PGXS:          $(PGXS)"
+	@echo "WAL encrypt:   DISABLED (requires Percona Server)"
+	@echo "Table encrypt: ENABLED"
+	@echo ""
+
+# Help target
+help:
+	@echo "pg_tde Open-source PostgreSQL Build"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all           - Build the extension (default)"
+	@echo "  install       - Install the extension"
+	@echo "  check         - Run regression tests"
+	@echo "  check-pg-version - Verify PG version support"
+	@echo "  info          - Show build configuration"
+	@echo "  clean         - Remove build artifacts"
+	@echo ""
+	@echo "This build disables WAL encryption (requires Percona Server API)."
+	@echo "Table data encryption is fully functional."
