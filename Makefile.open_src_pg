@@ -59,6 +59,7 @@ OBJS = \
 	src/access/pg_tde_tdemap.o \
 	src/access/pg_tde_xlog.o \
 	src/access/pg_tde_xlog_keys.o \
+	src/access/pg_tde_hook.o \
 	src/keyring/keyring_curl.o \
 	src/keyring/keyring_file.o \
 	src/keyring/keyring_vault.o \

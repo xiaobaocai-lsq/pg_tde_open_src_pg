@@ -1,3 +1,4 @@
+#define makeJsonLexContextCstringLen(a,b,c,d) makeJsonLexContextCstringLen(a,b,c)
 /*
  * Parser routines for the keyring JSON options
  *

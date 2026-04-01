@@ -34,6 +34,7 @@
 #include "keyring/keyring_file.h"
 #include "keyring/keyring_kmip.h"
 #include "keyring/keyring_vault.h"
+#include "access/pg_tde_hook.h"
 #include "pg_tde.h"
 #include "pg_tde_event_capture.h"
 #include "pg_tde_guc.h"
@@ -162,6 +163,15 @@ _PG_init(void)
 	InstallKmipKeyring();
 	RegisterTdeRmgr();
 	RegisterStorageMgr();
+
+	/*
+	 * ADAPTED: Also register hook-based TDE for open-source PostgreSQL.
+	 * The hook mechanism provides TDE without requiring Percona's smgr_register().
+	 * If smgr_register() is available (Percona or patched PG), SMGR-based
+	 * TDE will be used. Otherwise, the hook mechanism provides basic TDE
+	 * support for relation lifecycle operations.
+	 */
+	pg_tde_hook_init();
 
 	prev_shmem_request_hook = shmem_request_hook;
 	shmem_request_hook = tde_shmem_request;
